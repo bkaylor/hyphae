@@ -15,6 +15,11 @@ typedef struct {
 } Window;
 
 typedef struct {
+    int x;
+    int y;
+} Coordinates;
+
+typedef struct {
     Circle circle;
     bool has_spawned;
 
@@ -25,6 +30,7 @@ typedef struct {
 
     int branch;
     int id;
+    Coordinates collision_grid;
 } Node;
 
 typedef struct {
@@ -34,17 +40,24 @@ typedef struct {
     bool do_iteration;
     bool quit;
     bool render_intermediate;
+    bool starting_new;
     Uint64 frames;
 } UI;
 
 #define NODES_ON_HEAP
 // #undef NODES_ON_HEAP
 
+#define RENDER_ADDITIVE
+// #undef RENDER_ADDITIVE
+
 #ifdef NODES_ON_HEAP
 #define MAX_NODES 40000
 #else
 #define MAX_NODES 4000
 #endif
+
+#define COLLISION_GRID_X 20 
+#define COLLISION_GRID_Y 20 
 
 typedef struct {
 #ifdef NODES_ON_HEAP
@@ -64,6 +77,42 @@ typedef struct {
 
     Window window;
 } Graph;
+
+int node_compare(const void *a, const void *b)
+{
+    const Node *n1 = a;
+    const Node *n2 = b;
+
+    if (n1->circle.center.x < n2->circle.center.x) {
+        return -1;
+    } else if (n1->circle.center.x == n2->circle.center.x) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+void render_additive(SDL_Renderer *renderer, Graph graph, UI ui, int nodes_added_this_frame)
+{
+    if (ui.starting_new)
+    {
+        SDL_RenderClear(renderer);
+
+        // Set background color.
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        // SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderFillRect(renderer, NULL);
+    }
+
+    // Draw new nodes.
+    for (int i = graph.node_count - nodes_added_this_frame; i < graph.node_count; i += 1)
+    {
+        Node node = graph.nodes[i];
+        draw_circle(renderer, node.circle, node.color);
+    }
+
+    SDL_RenderPresent(renderer);
+}
 
 void render(SDL_Renderer *renderer, Graph graph, UI ui)
 {
@@ -112,7 +161,42 @@ void render(SDL_Renderer *renderer, Graph graph, UI ui)
 
 void update(UI *ui, Graph *graph) 
 {
-    bool starting_new = false;
+    // CONSTANTS
+    float initial_spacing = 14;
+    float initial_jitter = 0.002;
+    float initial_radius = 14;
+
+    int color_min = 56;
+    int color_range= 256 - color_min;
+
+    float radius_shrink_factor = 1.5;
+    float jitter_growth_factor = 1.2;
+    float color_darken_factor = 0.95;
+
+    float new_branch_spacing_boost = 2.5;
+    float new_branch_smallest_radius = 2.0;
+
+    float chance_to_spawn_new_branch = 1.5;
+
+    /* Experimenting
+    float initial_radius = 20;
+    float initial_spacing = initial_radius;
+    float initial_jitter = 0.0025;
+
+    int color_min = 40;
+    int color_range= 256 - color_min;
+
+    float radius_shrink_factor = 1.5;
+    float jitter_growth_factor = 1.2;
+    float color_darken_factor = 0.9;
+
+    float new_branch_spacing_boost = 1.7;
+    float new_branch_smallest_radius = 2.0;
+
+    float chance_to_spawn_new_branch = 2.0;
+    */
+
+    ui->starting_new = false;
 
     if (ui->do_iteration)
     {
@@ -121,11 +205,11 @@ void update(UI *ui, Graph *graph)
         graph->next_branch = 1;
         graph->next_id = 0;
 
-        float initial_spacing = 14;
-        float initial_jitter = 0.002;
+        float initial_spacing = 12;
+        float initial_jitter = 0.0015;
         float initial_radius = 14;
 
-        // TODO(bkaylor): Initial nodes' directions should always be away from the center(?)
+        // TODO(bkaylor): Should initial nodes' directions always be away from the center?
 
         for (int i = 0; i < graph->initial_point_count; i += 1)
         {
@@ -136,7 +220,32 @@ void update(UI *ui, Graph *graph)
             initial_node.branch = graph->next_branch;
             initial_node.jitter = initial_jitter;
             initial_node.spacing = initial_spacing;
-            initial_node.color = (SDL_Color){(rand()%200) + 56, (rand()%200) + 56, (rand()%200) + 56, 255};
+            initial_node.color = (SDL_Color){(rand()%color_range) + color_min, (rand()%color_range) + color_min, (rand()%color_range) + color_min, 255};
+
+            // Hardcode colors here if needed!
+#if 0
+            if (i == 0) {
+                initial_node.color = (SDL_Color){140, 26, 39, 255};
+            }
+            if (i == 1) {
+                initial_node.color = (SDL_Color){59, 101, 67, 255};
+            }
+            if (i == 2) {
+                initial_node.color = (SDL_Color){245, 245, 245, 255};
+            }
+#else
+            if (i == 0) {
+                initial_node.color = (SDL_Color){248, 200, 220, 255};
+            }
+            if (i == 1) {
+                initial_node.color = (SDL_Color){255, 255, 255, 255};
+            }
+            if (i == 2) {
+                initial_node.color = (SDL_Color){167, 199, 231, 255};
+            }
+#endif
+            initial_node.collision_grid.x = initial_node.circle.center.x / COLLISION_GRID_X;
+            initial_node.collision_grid.y = initial_node.circle.center.y / COLLISION_GRID_Y;
 
             graph->next_branch += 1;
 
@@ -145,30 +254,38 @@ void update(UI *ui, Graph *graph)
         }
 
         ui->do_iteration = false;
-        starting_new = true;
+        ui->starting_new = true;
     }
 
     if (!ui->render_intermediate && graph->active_point_count < 1)
     {
         ui->render_intermediate = true;
     }
-    if (!starting_new && graph->active_point_count < 1) return; 
+
+    if (!ui->starting_new && graph->active_point_count < 1) return; 
 
 #ifdef NODES_ON_HEAP
+    // TODO(bkaylor): Find something better than MAX_NODES?
     Node *nodes_to_add = malloc(sizeof(Node) * MAX_NODES);
 #else
     Node nodes_to_add[MAX_NODES];
 #endif
+
+    // Sort nodes by x coordinate.
+    qsort(graph->nodes, graph->node_count, sizeof(Node), node_compare);
+
     int nodes_to_add_count = 0;
 
     if (graph->node_count < graph->max_nodes)
     {
         for (int i = 0; i < graph->node_count; i += 1)
         {
+            if (graph->node_count + nodes_to_add_count >= graph->max_nodes) break;
+
             Node *node = &graph->nodes[i];
             if (node->has_spawned) continue;
 
-            // Continue the branch.
+            // Continue the branch by trying to add a new node.
             bool heads = rand() % 2 == 0;
 
             Node new_node;
@@ -187,27 +304,39 @@ void update(UI *ui, Graph *graph)
             };
             new_node.color = node->color;
 
+            new_node.collision_grid.x = new_node.circle.center.x / COLLISION_GRID_X;
+            new_node.collision_grid.y = new_node.circle.center.y / COLLISION_GRID_Y;
+
             node->has_spawned = true;
 
             // Only add the node if it doesn't collide with another branch.
             bool new_node_collided = false;
+
+            // Make sure this node didn't go off the screen.
+            if (new_node.circle.center.x < 0 || new_node.circle.center.y < 0 || 
+                new_node.circle.center.x > graph->window.x || new_node.circle.center.y > graph->window.y)
+            {
+                new_node_collided = true;
+            }
+
             for (int j = 0; j < graph->node_count; j += 1)
             {
+                Node *node = &graph->nodes[j];
+
+                // Check collision_grid coordinates.
+                int x_coordinate_difference = abs(new_node.collision_grid.x - node->collision_grid.x);
+                int y_coordinate_difference = abs(new_node.collision_grid.y - node->collision_grid.y);
+                if (x_coordinate_difference > 1 || y_coordinate_difference > 1) continue; 
+
                 // We don't care about collisions with our own branch.
-                if (new_node.branch == graph->nodes[j].branch) continue;
+                if (new_node.branch == node->branch) continue;
 
-                // We don't care about collisions with circles spawned close to us.
-                if (abs(new_node.id - graph->nodes[j].id) < 50) continue;
+                // We don't care about collisions with nodes spawned very near the same time as us.
+                if (abs(new_node.id - node->id) < 60) continue;
 
-                // Make sure this circle didn't go off the screen.
-                if (new_node.circle.center.x < 0 || new_node.circle.center.y < 0 || 
-                    new_node.circle.center.x > graph->window.x || new_node.circle.center.y > graph->window.y)
-                {
-                    new_node_collided = true;
-                    break;
-                }
+                // TODO(bkaylor): Add more ways to ignore nodes.
 
-                if (do_circles_collide(new_node.circle, graph->nodes[j].circle))
+                if (do_circles_collide(new_node.circle, node->circle))
                 {
                     new_node_collided = true;
                     break;
@@ -216,11 +345,13 @@ void update(UI *ui, Graph *graph)
 
             if (new_node_collided) continue;
 
+            // If we made it here, the new potential node is valid. Add it to the new nodes list!
             nodes_to_add[nodes_to_add_count] = new_node;
             nodes_to_add_count += 1;
 
-            // Additionally, give each new node a small chance to start a new smaller branch.
-            if (new_node.circle.radius > 2 && rand() % 100 < ((new_node.branch+1.5)*1.5))
+            // In addition to continuing existing branches, give each new node in a branch 
+            // a small chance to start a new, smaller branch.
+            if ((new_node.circle.radius > new_branch_smallest_radius) && rand() % 100 < ((new_node.branch+chance_to_spawn_new_branch)*chance_to_spawn_new_branch))
             {
                 bool heads = rand() % 2 == 0;
 
@@ -233,25 +364,25 @@ void update(UI *ui, Graph *graph)
                 new_branch.id= graph->next_id;
                 graph->next_id += 1;
 
-                float radius_shrink_factor = 1.5;
-                float jitter_growth_factor = 1.2;
-
                 new_branch.jitter = new_node.jitter * jitter_growth_factor;
                 new_branch.spacing = new_node.spacing / radius_shrink_factor;
                 new_branch.direction = new_node.direction + (heads ? 1.5 : -1.5);
                 new_branch.circle = (Circle){
-                    vec2_add(new_node.circle.center, vec2_scalar_multiply(vec2_normalize(vec2_rotate((vec2){1, 0}, new_branch.direction)), new_branch.spacing*2.5)),
+                    vec2_add(new_node.circle.center, vec2_scalar_multiply(vec2_normalize(vec2_rotate((vec2){1, 0}, new_branch.direction)), new_branch.spacing*new_branch_spacing_boost)),
                     new_node.circle.radius/radius_shrink_factor
                 };
 
-                float color_darken_factor = 0.8;
                 new_branch.color = (SDL_Color){new_node.color.r*color_darken_factor, new_node.color.g*color_darken_factor, new_node.color.b*color_darken_factor, new_node.color.a};
+
+                new_branch.collision_grid.x = new_branch.circle.center.x / COLLISION_GRID_X;
+                new_branch.collision_grid.y = new_branch.circle.center.y / COLLISION_GRID_Y;
 
                 nodes_to_add[nodes_to_add_count] = new_branch;
                 nodes_to_add_count += 1;
             }
         }
 
+        // Add the new nodes into the graph.
         graph->active_point_count = nodes_to_add_count;
         for (int i = 0; i < nodes_to_add_count; i += 1)
         {
@@ -360,12 +491,6 @@ int main(int argc, char *argv[])
     bool quit = false;
     bool do_iteration = true;
 
-    // Main loop
-    const float FPS_INTERVAL = 1.0f;
-    Uint64 fps_start, fps_current, fps_frames = 0;
-
-    fps_start = SDL_GetTicks();
-
     Graph graph;
 #ifdef NODES_ON_HEAP
     graph.nodes = malloc(sizeof(Node) * MAX_NODES);
@@ -383,6 +508,16 @@ int main(int argc, char *argv[])
     ui.frames = 0;
     ui.render_intermediate = true;
 
+    int nodes_last_frame = 0;
+    int nodes_this_frame = 0;
+    int nodes_added_this_frame = 0;
+
+    // Main loop
+    const float FPS_INTERVAL = 1.0f;
+    Uint64 fps_start, fps_current, fps_frames = 0;
+
+    fps_start = SDL_GetTicks();
+
     while (!ui.quit)
     {
         SDL_PumpEvents();
@@ -393,7 +528,15 @@ int main(int argc, char *argv[])
             SDL_GetWindowSize(win, &graph.window.x, &graph.window.y);
 
             update(&ui, &graph);
+            nodes_last_frame = nodes_this_frame;
+            nodes_this_frame = graph.node_count;
+            nodes_added_this_frame = nodes_this_frame - nodes_last_frame;
+
+#ifdef RENDER_ADDITIVE
+            render_additive(ren, graph, ui, nodes_added_this_frame);
+#else
             render(ren, graph, ui);
+#endif
 
             fps_frames++;
 
