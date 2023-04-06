@@ -7,11 +7,7 @@ I decided to try this after reading [this blogpost by inconvergent](https://inco
 
 `up arrow` and `down arrow` to change number of initial points 
 
-`f` to hide diagram until finished
-
 `space` to generate a diagram
-
-`tab` to hide ui
 
 `esc` to exit
 
